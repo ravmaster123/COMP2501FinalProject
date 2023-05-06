@@ -1,0 +1,272 @@
+# Read the CSV file into a data frame
+df <- read.csv("data.csv")
+names(df)[names(df) == "No..Moves"] <- "No. Moves"
+library(dplyr)
+# Create a new data frame with modified columns
+df_processed <- data.frame(df)
+df_processed$EloDiff <- as.numeric(df$WhiteElo) - as.numeric(df$BlackElo)
+df_processed$EloAvg <- (as.numeric(df$WhiteElo) + as.numeric(df$BlackElo))/2
+df_processed$Modified_Result <- ifelse(df$Result == "1-0", 1, ifelse(df$Result == "1/2-1/2", 1/3, -1))
+df_processed$winprobability <- 1 / (1 + 10^(-df_processed$EloDiff/400))
+df_processed$value <- ifelse(df$Result == "1-0", (1-df_processed$winprobability)/df_processed$winprobability, ifelse(df$Result == "1/2-1/2", 1, 1/((1-df_processed$winprobability)/df_processed$winprobability)))
+df_processed$score_value <- df_processed$value*df_processed$Modified_Result
+df_processed$Eval5 <- sub("^\\+", "", df_processed$Eval5)
+df_processed$Eval12 <- sub("^\\+", "", df_processed$Eval12)
+is_numeric5 <- !is.na(as.numeric(df_processed$Eval5))
+is_numeric12 <- !is.na(as.numeric(df_processed$Eval12))
+df_processed$EvalChange <- ifelse(is_numeric5 & is_numeric12, as.numeric(df_processed$Eval12) - as.numeric(df_processed$Eval5), NA)
+df_processed <- df_processed %>%
+  mutate(TimeType = if_else(as.numeric(sub("\\+.+", "", TimeControl)) <= 120, "Bullet",
+                            if_else(as.numeric(sub("\\+.+", "", TimeControl)) <= 300, "Blitz",
+                                    if_else(as.numeric(sub("\\+.+", "", TimeControl)) <= 900, "Rapid", "Classical"))))
+# View the first few rows of the updated data frame
+
+library(dplyr)
+library(ggplot2)
+
+# Calculate the standard deviation of EvalChange for each TimeType, ignoring NA values
+sd_data <- df_processed %>%
+  group_by(TimeType) %>%
+  summarize(sd = sd(EvalChange, na.rm = TRUE))
+
+# Create a bar chart of the standard deviation of EvalChange for each TimeType with a smaller title
+ggplot(sd_data, aes(x = TimeType, y = sd)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(x = "TimeControl", y = "Standard deviation of EvalChange", title = "Standard deviation of EvalChange by TimeControl") +
+  theme(plot.title = element_text(size = 12))
+
+
+
+# Load the ggplot2 package
+library(ggplot2)
+
+# Create a scatterplot of ProbCaptureFirst30 vs No.Moves
+forPeaceCorrelationPlot <- data.frame(df_processed)
+forPeaceCorrelationPlot <- forPeaceCorrelationPlot[forPeaceCorrelationPlot$No..Moves <=15, ]
+ggplot(forPeaceCorrelationPlot, aes(x = 4*No..Moves, y = ProbCaptureFirst30)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(x = "No. Moves", y = "ProbCaptureFirst30", title = "Avg Captures vs Avg Game Length") +
+  theme(axis.text = element_text(size = 8), plot.title = element_text(size = 11))
+library(tidyverse)
+forPeaceCorrelationPlot |> summarize(r=cor(No..Moves, ProbCaptureFirst30)) |> pull(r)
+
+#Score vs Peace all throughout
+ggplot(forPeaceCorrelationPlot, aes(y =score_value, x = ProbCaptureFirst30)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(y = "White Performance", x = "ProbCaptureFirst30", title = "Performance of White vs Probability of Capture for all games") +
+  theme(axis.text = element_text(size = 8), plot.title = element_text(size = 9))
+forPeaceCorrelationPlot |> summarize(r=cor(score_value, ProbCaptureFirst30)) |> pull(r)
+
+
+
+
+
+# Frequency of opening appearance by end score
+fen_freq <- table(df_processed$Fen)
+freq_df <- data.frame(Fen = names(fen_freq), Frequency = as.vector(fen_freq))
+fen_scores <- aggregate(score_value ~ Fen, data = df_processed, FUN = sum)
+freq_df <- merge(freq_df, fen_scores, by = "Fen", all.x = TRUE)
+freq_df$score_value <- freq_df$score_value/freq_df$Frequency
+
+
+
+
+# Average move length by opening appearance
+fen_moves <- table(df_processed$Fen)
+freq_df_moves <- data.frame(Fen = names(fen_moves), Frequency = as.vector(fen_moves))
+fen_moves_avg <- aggregate(No..Moves ~ Fen, data = df_processed, FUN = mean)
+freq_df <- merge(freq_df, fen_moves_avg, by = "Fen", all.x = TRUE)
+freq_df <- merge(freq_df, freq_df_moves, by = "Fen", all.x = TRUE)
+names(df)[names(df) == "No..Moves.x"] <- "No. Moves"
+freq_df <- subset(freq_df, select = -c(No..Moves.x, No..Moves.y))
+freq_df <- subset(freq_df, select = -c(Frequency.x))
+names(freq_df)[names(freq_df) == "No..Moves"] <- "No. Moves"
+names(freq_df)[names(freq_df) == "Frequency.y"] <- "Frequency"
+
+
+
+
+# Compute average EvalChange for each Fen value and add as column to freq_df
+fen_evalchange <- aggregate(EvalChange ~ Fen, data = df_processed, FUN = mean)
+freq_df <- merge(freq_df, fen_evalchange, by = "Fen", all.x = TRUE)
+freq_df$EvalChange <- freq_df$EvalChange/100
+
+
+#Remove with less than 15 games
+freq_df <- freq_df[freq_df$Frequency >= 15, ]
+
+#Sort by Frequency
+freq_df <- freq_df[order(-freq_df$Frequency), ]
+head(freq_df)
+
+#Sort by White Adv
+freq_df <- freq_df[order(-freq_df$score_value), ]
+head(freq_df)
+
+#Sort by Black Adv
+freq_df <- freq_df[order(freq_df$score_value), ]
+head(freq_df)
+
+#Sort by EvalChange (White Adv)
+freq_df <- freq_df[order(-freq_df$EvalChange), ]
+head(freq_df)
+
+#Sort by EvalChange (Black Adv)
+freq_df <- freq_df[order(freq_df$EvalChange), ]
+head(freq_df)
+
+
+
+
+
+
+
+
+
+
+
+
+
+#First Move Data
+# Compute average number of moves and average probability of capture in the first 30 moves for each unique FirstMove value
+firstmove_df <- aggregate(cbind(`AverageNo.Moves` = `No..Moves`, `AverageProbCaptureFirst30` = ProbCaptureFirst30) ~ FirstMove, data = df_processed, FUN = mean)
+# Compute frequency of each unique FirstMove value using table() and add as a column to firstmove_df
+freq <- table(df_processed$FirstMove)
+firstmove_df$Frequency <- as.vector(freq[match(firstmove_df$FirstMove, names(freq))])
+# Compute Score for each first move
+score_df <- aggregate(df_processed$score_value, by = list(FirstMove = df_processed$FirstMove), FUN = mean)
+firstmove_df <- merge(firstmove_df, score_df, by = "FirstMove")
+names(firstmove_df)[names(firstmove_df) == "x"] <- "Score"
+
+#Arrange by Freq
+firstmove_df <- firstmove_df[order(-firstmove_df$Frequency), ]
+head(firstmove_df)
+#Freq First Move
+ggplot(firstmove_df, aes(x = FirstMove, y = Frequency)) +
+  geom_bar(stat = "identity") +
+  labs(x = "First Move", y = "Frequency", title = "Frequency of each First Move")
+
+
+
+#Arrange by War
+firstmove_df <- firstmove_df[order(-firstmove_df$AverageProbCaptureFirst30), ]
+head(firstmove_df)
+
+#Arrange by Peacefulness
+firstmove_df <- firstmove_df[order(firstmove_df$AverageProbCaptureFirst30), ]
+head(firstmove_df)
+
+#Arrange by Score (Good)
+firstmove_df <- firstmove_df[order(-firstmove_df$Score), ]
+head(firstmove_df)
+
+#Arrange by Score (Bad)
+firstmove_df <- firstmove_df[order(firstmove_df$Score), ]
+head(firstmove_df)
+
+#Peace vs Game Length
+ggplot(firstmove_df, aes(x = AverageNo.Moves, y = AverageProbCaptureFirst30)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(x = "No. Moves", y = "ProbCaptureFirst30", title = "Avg Captures vs Avg Game Length by Opening") +
+  theme(axis.text = element_text(size = 8), plot.title = element_text(size = 11))
+library(tidyverse)
+firstmove_df |> summarize(r=cor(AverageNo.Moves, AverageProbCaptureFirst30)) |> pull(r)
+
+#Score vs Peace
+ggplot(firstmove_df, aes(y = Score, x = AverageProbCaptureFirst30)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(y = "White Performance", x = "ProbCaptureFirst30", title = "Performance of White vs Probability of Capture by first move") +
+  theme(axis.text = element_text(size = 8), plot.title = element_text(size = 9))
+firstmove_df |> summarize(r=cor(Score, AverageProbCaptureFirst30)) |> pull(r)
+
+
+
+
+
+#Filtered by Time Control
+# Split the df_processed data frame into separate data frames for each TimeType
+time_type_list <- split(df_processed, df_processed$TimeType)
+
+# View the first few rows of the "Bullet" data frame
+head(time_type_list$Bullet)
+
+# View the first few rows of the "Blitz" data frame
+head(time_type_list$Blitz)
+
+# View the first few rows of the "Rapid" data frame
+head(time_type_list$Rapid)
+
+# View the first few rows of the "Classical" data frame
+head(time_type_list$Classical)
+
+# Load the required packages
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+
+# Filter the data for only e4 moves
+library(dplyr)
+library(ggplot2)
+
+# Calculate the proportion of e4 moves for each TimeType
+e4_proportions <- df_processed %>%
+  group_by(TimeType) %>%
+  summarize(prop = mean(FirstMove == "e4"))
+
+# Create a bar chart of the proportion of e4 moves for each TimeType
+ggplot(e4_proportions, aes(x = TimeType, y = prop)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(x = "TimeControl", y = "Proportion of e4 moves", title = "Proportion of e4 moves by TimeControl")
+
+d4_proportions <- df_processed %>%
+  group_by(TimeType) %>%
+  summarize(prop = mean(FirstMove == "d4"))
+
+# Create a bar chart of the proportion of d4 moves for each TimeType
+ggplot(d4_proportions, aes(x = TimeType, y = prop)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(x = "TimeControl", y = "Proportion of d4 moves", title = "Proportion of d4 moves by TimeControl")
+
+library(dplyr)
+library(ggplot2)
+
+# Calculate the proportion of Nf3 moves for each TimeType
+Nf3_proportions <- df_processed %>%
+  group_by(TimeType) %>%
+  summarize(prop = mean(FirstMove == "Nf3"))
+
+# Create a bar chart of the proportion of Nf3 moves for each TimeType
+ggplot(Nf3_proportions, aes(x = TimeType, y = prop)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(x = "TimeControl", y = "Proportion of Nf3 moves", title = "Proportion of Nf3 moves by TimeControl")
+
+library(dplyr)
+library(ggplot2)
+
+# Calculate the proportion of c3 moves for each TimeType
+c3_proportions <- df_processed %>%
+  group_by(TimeType) %>%
+  summarize(prop = mean(FirstMove == "c3"))
+
+# Create a bar chart of the proportion of c3 moves for each TimeType
+ggplot(c3_proportions, aes(x = TimeType, y = prop)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(x = "TimeControl", y = "Proportion of c3 moves", title = "Proportion of c3 moves by TimeControl")
+  
+  
+
+
+# Calculate the mean ProbCaptureFirst30 for each TimeType
+time_type_mean <- df_processed %>%
+  group_by(TimeType) %>%
+  summarize(mean_prob_capture = mean(ProbCaptureFirst30))
+
+# Create a bar chart of the mean ProbCaptureFirst30 for each TimeType
+ggplot(time_type_mean, aes(x = TimeType, y = mean_prob_capture)) +
+  geom_bar(stat = "identity") +
+  labs(x = "TimeType", y = "Mean ProbCaptureFirst30", title = "Mean ProbCaptureFirst30 by TimeType")
